@@ -24,7 +24,7 @@ import chisel3.experimental.chiselName
 import xiangshan.cache.mmu.CAMTemplate
 
 class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
-  val numWays: Int = 1, val tagWidth: Int = 0)(implicit p: Parameters) extends XSModule {
+  val numWays: Int = 1, val tagWidth: Int = 0, val hasWr2sram: Boolean = false)(implicit p: Parameters) extends XSModule {
   require(numEntries >= 0)
   require(idxWidth > 0)
   require(numWays >= 1)
@@ -37,9 +37,15 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
     val write_tag = if (hasTag) Some(Input(UInt(tagWidth.W))) else None
     val write_data = Input(Vec(numWays, gen))
     val write_way_mask = if (multipleWays) Some(Input(Vec(numWays, Bool()))) else None
+    val ren = if (hasWr2sram) Some(Input(Bool())) else None
+    val pending_false = if (hasWr2sram) Some(Input(Bool())) else None
 
     val hit = Output(Bool())
     val hit_data = Vec(numWays, Valid(gen))
+    
+    val by2sram = Output(Bool())
+    val pending_sram_idx = Output(UInt(idxWidth.W))
+    val pending_sram_data = Output(Vec(numWays, gen))
   })
 
   class WrBypassPtr extends CircularQueuePtr[WrBypassPtr](numEntries){
@@ -55,6 +61,8 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   }
   val idx_tag_cam = Module(new CAMTemplate(new Idx_Tag, numEntries, 1))
   val data_mem = Mem(numEntries, Vec(numWays, gen))
+  val idx_tag_mem = Mem(numEntries, new Idx_Tag)
+  val pending_write_to_sram = RegInit(VecInit(Seq.fill(numEntries)(0.B)))
 
   val valids = RegInit(0.U.asTypeOf(Vec(numEntries, Vec(numWays, Bool()))))
 
@@ -72,13 +80,33 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
     io.hit_data(i).bits  := data_mem.read(hit_idx)(i)
   }
 
+  io.by2sram := pending_write_to_sram.reduce(_||_)
+  val pending_bypass_idx = WireDefault(0.U(log2Up(numEntries).W))
+  for (i <- 0 until numEntries) {
+    when(pending_write_to_sram(i)) { pending_bypass_idx := i.U }
+  }
+  io.pending_sram_idx := idx_tag_mem.read(pending_bypass_idx).idx
+  io.pending_sram_data := data_mem.read(pending_bypass_idx)
+  when(io.pending_false.getOrElse(false.B)) { pending_write_to_sram(pending_bypass_idx) := false.B }
+  assert(!(io.pending_false.getOrElse(false.B) && io.ren.getOrElse(false.B)))
+
   val full_mask = Fill(numWays, 1.U(1.W)).asTypeOf(Vec(numWays, Bool()))
   val update_way_mask = io.write_way_mask.getOrElse(full_mask)
 
   // write data on every request
+  val idx_tag_wdata = Wire(new Idx_Tag)
+  idx_tag_wdata.idx := io.write_idx
+  if (hasTag) { idx_tag_wdata.tag.get := io.write_tag.get }
+
   when (io.wen) {
     val data_write_idx = Mux(hit, hit_idx, enq_idx)
     data_mem.write(data_write_idx, io.write_data, update_way_mask)
+    idx_tag_mem.write(data_write_idx, idx_tag_wdata)
+    when(!io.ren.getOrElse(false.B)) {
+      when(!hit) { pending_write_to_sram(data_write_idx) := false.B }
+    }
+    .otherwise { pending_write_to_sram(data_write_idx) := true.B }
+    pending_write_to_sram(data_write_idx) := io.ren.getOrElse(false.B)
   }
 
   // update valids

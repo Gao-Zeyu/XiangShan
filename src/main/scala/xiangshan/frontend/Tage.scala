@@ -150,6 +150,8 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
    // val update  = Input(new TageUpdate)
   })
 
+  val (ren, wen) = (io.s0_fire, io.update_mask.reduce(_||_))
+
   val bimAddr = new TableAddr(log2Up(BtSize), instOffsetBits)
 
   val bt = Module(new SRAMTemplate(UInt(2.W), set = BtSize, way=numBr, shouldReset = false, holdRead = true))
@@ -176,8 +178,9 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
 
   val newCtrs = Wire(Vec(numBr, UInt(2.W))) // physical bridx
 
-  val wrbypass = Module(new WrBypass(UInt(2.W), bypassEntries, log2Up(BtSize), numWays = numBr)) // logical bridx
+  val wrbypass = Module(new WrBypass(UInt(2.W), bypassEntries, log2Up(BtSize), numWays = numBr, hasWr2sram = true)) // logical bridx
   wrbypass.io.wen := io.update_mask.reduce(_||_)
+  wrbypass.io.ren.get := ren
   wrbypass.io.write_idx := u_idx
   wrbypass.io.write_way_mask.map(_ := io.update_mask)
   for (li <- 0 until numBr) {
@@ -214,12 +217,22 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
     ).reduce(_||_)
   )).asUInt
 
+  val (wr2sram_en, by2sram_en) = ((wen && !ren), (!wen && !ren && wrbypass.io.by2sram))
+  val by2sram_data = wrbypass.io.pending_sram_data
+  val by2sram_idx = wrbypass.io.pending_sram_idx
+  wrbypass.io.pending_false.get := by2sram_en
+
   bt.io.w.apply(
-    valid = io.update_mask.reduce(_||_) || doing_reset,
-    data = Mux(doing_reset, VecInit(Seq.fill(numBr)(2.U(2.W))), newCtrs),
-    setIdx = Mux(doing_reset, resetRow, u_idx),
-    waymask = Mux(doing_reset, Fill(numBr, 1.U(1.W)).asUInt(), updateWayMask)
+    valid = wr2sram_en || by2sram_en || doing_reset,
+    data    = Mux(doing_reset, VecInit(Seq.fill(numBr)(2.U(2.W))), Mux(wr2sram_en, newCtrs, by2sram_data)),
+    setIdx  = Mux(doing_reset, resetRow,                           Mux(wr2sram_en, u_idx, by2sram_idx)),
+    waymask = Mux(doing_reset, Fill(numBr, 1.U(1.W)).asUInt(),     Mux(wr2sram_en, updateWayMask, Fill(numBr, 1.U(1.W)).asUInt()))
   )
+
+  when(!doing_reset){
+    assert(!(bt.io.r.req.valid && bt.io.w.req.valid))
+    assert(bt.io.r.req.ready)
+  }
 
 }
 
