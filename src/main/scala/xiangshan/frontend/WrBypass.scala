@@ -44,7 +44,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
     val hit_data = Vec(numWays, Valid(gen))
     
     val by2sram = Output(Bool())
-    val pending_sram_idx = Output(UInt(idxWidth.W))
+    val pending_sram_idx_tag = Output(new Idx_Tag)
     val pending_sram_data = Output(Vec(numWays, gen))
   })
 
@@ -85,7 +85,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   for (i <- 0 until numEntries) {
     when(pending_write_to_sram(i)) { pending_bypass_idx := i.U }
   }
-  io.pending_sram_idx := idx_tag_mem.read(pending_bypass_idx).idx
+  io.pending_sram_idx_tag := idx_tag_mem.read(pending_bypass_idx)
   io.pending_sram_data := data_mem.read(pending_bypass_idx)
   when(io.pending_false.getOrElse(false.B)) { pending_write_to_sram(pending_bypass_idx) := false.B }
   assert(!(io.pending_false.getOrElse(false.B) && io.ren.getOrElse(false.B)))

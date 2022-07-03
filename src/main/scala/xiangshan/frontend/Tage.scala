@@ -219,7 +219,7 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
 
   val (wr2sram_en, by2sram_en) = ((wen && !ren), (!wen && !ren && wrbypass.io.by2sram))
   val by2sram_data = wrbypass.io.pending_sram_data
-  val by2sram_idx = wrbypass.io.pending_sram_idx
+  val by2sram_idx = wrbypass.io.pending_sram_idx_tag.idx
   wrbypass.io.pending_false.get := by2sram_en
 
   bt.io.w.apply(
@@ -390,12 +390,37 @@ class TageTable
 
   // val silent_update_from_wrbypass = Wire(Bool())
 
+  val (ram_ren, ram_wen) = (VecInit(Seq.tabulate(nBanks)(b => io.req.fire && s0_bank_req_1h(b))), 
+                            VecInit(Seq.tabulate(nBanks)(b => io.update.mask.reduce(_||_) && update_req_bank_1h(b) && per_bank_not_silent_update(b).reduce(_||_))))
+
+  val bank_wrbypasses = Seq.fill(nBanks)(Seq.fill(numBr)(
+    Module(new WrBypass(UInt(TageCtrBits.W), perBankWrbypassEntries, log2Ceil(nRowsPerBr/nBanks), tagWidth=tagLen, hasWr2sram = true))
+  )) // let it corresponds to logical brIdx
+
   for (b <- 0 until nBanks) {
+    val wrbypass = bank_wrbypasses(b)
+    val (wr2sram_en, by2sram_en) = ((ram_wen(b) && !ram_ren(b)), (!ram_wen(b) && !ram_ren(b) && wrbypass.map(_.io.by2sram).reduce(_||_)))
+    val by2sram_data = Wire(Vec(numBr, new TageEntry))
+    by2sram_data zip wrbypass foreach { case (data, pass) => {
+      data.ctr := pass.io.pending_sram_data(0)
+      data.tag := pass.io.pending_sram_idx_tag.tag.get
+      data.valid := true.B
+    }}
+    val by2sram_way_mask = WireDefault(0.U(numBr.W))
+    val by2sram_idx = WireDefault(0.U.asTypeOf(update_idx_in_bank))
+    for (li <- 0 until numBr) {
+      when(wrbypass(li).io.by2sram){
+        by2sram_way_mask := UIntToOH(li.U)
+        by2sram_idx := wrbypass(li).io.pending_sram_idx_tag.idx
+      }
+    }
+    val by2sram_idx_tag = wrbypass.map(_.io.pending_sram_idx_tag)
+    wrbypass.foreach(_.io.pending_false.get := by2sram_en)
     table_banks(b).io.w.apply(
-      valid   = io.update.mask.reduce(_||_) && update_req_bank_1h(b) && per_bank_not_silent_update(b).reduce(_||_),
-      data    = per_bank_update_wdata(b),
-      setIdx  = update_idx_in_bank,
-      waymask = per_bank_update_way_mask(b)
+      valid   = wr2sram_en || by2sram_en,
+      data    = Mux(wr2sram_en, per_bank_update_wdata(b),    by2sram_data),
+      setIdx  = Mux(wr2sram_en, update_idx_in_bank,          by2sram_idx),
+      waymask = Mux(wr2sram_en, per_bank_update_way_mask(b), by2sram_way_mask)
     )
   }
 
@@ -427,9 +452,8 @@ class TageTable
     ctr.andR && taken || !ctr.orR && !taken
   }
 
-  val bank_wrbypasses = Seq.fill(nBanks)(Seq.fill(numBr)(
-    Module(new WrBypass(UInt(TageCtrBits.W), perBankWrbypassEntries, log2Ceil(nRowsPerBr/nBanks), tagWidth=tagLen))
-  )) // let it corresponds to logical brIdx
+  val (wrbypass_ren, wrbypass_wen) = (VecInit((0 until nBanks).map(b => VecInit((0 until numBr).map(li => io.req.fire && s0_bank_req_1h(b))))),
+                                      VecInit((0 until nBanks).map(b => VecInit((0 until numBr).map(li => io.update.mask(li) && update_req_bank_1h(b))))))
 
   for (b <- 0 until nBanks) {
     val not_silent_update = per_bank_not_silent_update(b)
@@ -461,6 +485,7 @@ class TageTable
     for (li <- 0 until numBr) {
       val wrbypass = bank_wrbypasses(b)(li)
       val br_pidx = get_phy_br_idx(update_unhashed_idx, li)
+      wrbypass.io.ren.get := wrbypass_ren(b)(li)
       wrbypass.io.wen := io.update.mask(li) && update_req_bank_1h(b)
       wrbypass.io.write_idx := get_bank_idx(update_idx)
       wrbypass.io.write_tag.map(_ := update_tag)
