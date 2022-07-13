@@ -185,25 +185,21 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   wrbypass.io.read_idx.get := s0_idx
 
   // read from wrbypass/sram
-  val wrbypass_read_data = 
+  def wrbypass2sram_map(idx: UInt, hit: Bool, data1: Vec[Valid[UInt]], data2: Vec[UInt], type2: Boolean): //type2: true->wrbypass
+    Vec[UInt] = {
     VecInit((0 until numBr).map(pi => {
-      val br_lidx = get_lgc_br_idx(s0_idx, pi.U(log2Ceil(numBr).W))
-      wrbypass.io.read_data(br_lidx).bits
+      val br_lidx = get_lgc_br_idx(idx, pi.U(log2Ceil(numBr).W))
+      Mux(hit && data1(br_lidx).valid, data1(br_lidx).bits, data2(if(type2){br_lidx}else{pi}))
     }))
-  val s1_read = Mux(RegNext(wrbypass.io.read_hit.get), RegNext(wrbypass_read_data), bt.io.r.resp.data)
+  }
+  val s1_read = wrbypass2sram_map(RegNext(s0_idx), RegNext(wrbypass.io.read_hit), RegNext(wrbypass.io.read_data), bt.io.r.resp.data, false)
   val s1_idx = RegEnable(s0_idx, io.s0_fire)
 
   val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
   io.s1_cnt := per_br_ctr
 
 
-  val oldCtrs =
-    VecInit((0 until numBr).map(pi => {
-      val br_lidx = get_lgc_br_idx(u_idx, pi.U(log2Ceil(numBr).W))
-      Mux(wrbypass.io.hit && wrbypass.io.hit_data(br_lidx).valid,
-        wrbypass.io.hit_data(br_lidx).bits,
-        io.update_cnt(br_lidx))
-    }))
+  val oldCtrs = wrbypass2sram_map(u_idx, wrbypass.io.hit, wrbypass.io.hit_data, io.update_cnt, true)
 
   def satUpdate(old: UInt, len: Int, taken: Bool): UInt = {
     val oldSatTaken = old === ((1 << len)-1).U
