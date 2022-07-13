@@ -97,7 +97,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   }
 
   // read hit
-  idx_tag_cam.io.r.req(1)(io.read_idx.get, io.read_tag.getOrElse(0.U))
+  idx_tag_cam.io.r.req(1)(io.read_idx.getOrElse(0.U), io.read_tag.getOrElse(0.U))
   val hits_oh_r = idx_tag_cam.io.r.resp(1)
   val hit_idx_r = OHToUInt(hits_oh_r)
   val hit_r = hits_oh_r.reduce(_||_)
@@ -141,6 +141,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
 
   XSPerfAccumulate("hit_over_pending", io.wen && hit && pending_write_to_sram(hit_idx))
   XSPerfAccumulate("enq_over_pending", io.wen && !hit && pending_write_to_sram(enq_idx))
+  XSPerfAccumulate("read_write_sameTime", io.wen && io.ren.getOrElse(0.B))
 
   // update valids
   for (i <- 0 until numWays) {

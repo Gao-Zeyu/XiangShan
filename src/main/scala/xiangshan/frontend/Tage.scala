@@ -185,21 +185,20 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   wrbypass.io.read_idx.get := s0_idx
 
   // read from wrbypass/sram
-  def wrbypass2sram_map(idx: UInt, hit: Bool, data1: Vec[Valid[UInt]], data2: Vec[UInt], type2: Boolean): //type2: true->wrbypass
-    Vec[UInt] = {
+  def wrbypass2sram_map_valid(idx: UInt, hit: Bool, data1: Vec[Valid[UInt]], data2: Vec[UInt], type2: Boolean): Vec[UInt] = { //type2: true->wrbypass
     VecInit((0 until numBr).map(pi => {
       val br_lidx = get_lgc_br_idx(idx, pi.U(log2Ceil(numBr).W))
-      Mux(hit && data1(br_lidx).valid, data1(br_lidx).bits, data2(if(type2){br_lidx}else{pi}))
+      Mux(hit && data1(br_lidx).valid, data1(br_lidx).bits, data2(if(type2){br_lidx}else{pi.U}))
     }))
   }
-  val s1_read = wrbypass2sram_map(RegNext(s0_idx), RegNext(wrbypass.io.read_hit), RegNext(wrbypass.io.read_data), bt.io.r.resp.data, false)
+  val s1_read = wrbypass2sram_map_valid(RegNext(s0_idx), RegNext(wrbypass.io.read_hit), RegNext(wrbypass.io.read_data), bt.io.r.resp.data, false)
   val s1_idx = RegEnable(s0_idx, io.s0_fire)
 
   val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
   io.s1_cnt := per_br_ctr
 
 
-  val oldCtrs = wrbypass2sram_map(u_idx, wrbypass.io.hit, wrbypass.io.hit_data, io.update_cnt, true)
+  val oldCtrs = wrbypass2sram_map_valid(u_idx, wrbypass.io.hit, wrbypass.io.hit_data, io.update_cnt, true)
 
   def satUpdate(old: UInt, len: Int, taken: Bool): UInt = {
     val oldSatTaken = old === ((1 << len)-1).U
@@ -221,9 +220,15 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
     ).reduce(_||_)
   )).asUInt
 
+  def wrbypass2sram_map_N(idx: UInt, data: Vec[UInt]): Vec[UInt] = { //type2: true->wrbypass
+    VecInit((0 until numBr).map(pi => {
+      val br_lidx = get_lgc_br_idx(idx, pi.U(log2Ceil(numBr).W))
+      data(br_lidx)
+    }))
+  }
   val (wr2sram_en, by2sram_en) = ((wen && !ren), (!wen && !ren && wrbypass.io.by2sram))
-  val by2sram_data = wrbypass.io.pending_sram_data
   val by2sram_idx = wrbypass.io.pending_sram_idx_tag.idx
+  val by2sram_data = wrbypass2sram_map_N(by2sram_idx, wrbypass.io.pending_sram_data)
   wrbypass.io.pending_false.get := by2sram_en
 
   bt.io.w.apply(
@@ -489,7 +494,11 @@ class TageTable
     for (li <- 0 until numBr) {
       val wrbypass = bank_wrbypasses(b)(li)
       val br_pidx = get_phy_br_idx(update_unhashed_idx, li)
+      // read wrbypass
       wrbypass.io.ren.get := wrbypass_ren(b)(li)
+      wrbypass.io.read_idx.get := get_bank_idx(s0_idx)
+      wrbypass.io.read_tag.get := 0.U //TODO:
+      // write wrbypass
       wrbypass.io.wen := io.update.mask(li) && update_req_bank_1h(b)
       wrbypass.io.write_idx := get_bank_idx(update_idx)
       wrbypass.io.write_tag.map(_ := update_tag)
