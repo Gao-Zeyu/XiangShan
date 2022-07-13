@@ -165,13 +165,6 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   bt.io.r.req.valid := io.s0_fire
   bt.io.r.req.bits.setIdx := s0_idx
 
-  val s1_read = bt.io.r.resp.data
-  val s1_idx = RegEnable(s0_idx, io.s0_fire)
-
-
-  val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
-  io.s1_cnt := per_br_ctr
-
   // Update logic
 
   val u_idx = bimAddr.getIdx(io.update_pc)
@@ -179,14 +172,29 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   val newCtrs = Wire(Vec(numBr, UInt(2.W))) // physical bridx
 
   val wrbypass = Module(new WrBypass(UInt(2.W), bypassEntries, log2Up(BtSize), numWays = numBr, hasWr2sram = true)) // logical bridx
+  // write
   wrbypass.io.wen := io.update_mask.reduce(_||_)
-  wrbypass.io.ren.get := ren
   wrbypass.io.write_idx := u_idx
   wrbypass.io.write_way_mask.map(_ := io.update_mask)
   for (li <- 0 until numBr) {
     val br_pidx = get_phy_br_idx(u_idx, li)
     wrbypass.io.write_data(li) := newCtrs(br_pidx)
   }
+  // read
+  wrbypass.io.ren.get := ren
+  wrbypass.io.read_idx.get := s0_idx
+
+  // read from wrbypass/sram
+  val wrbypass_read_data = 
+    VecInit((0 until numBr).map(pi => {
+      val br_lidx = get_lgc_br_idx(s0_idx, pi.U(log2Ceil(numBr).W))
+      wrbypass.io.read_data(br_lidx).bits
+    }))
+  val s1_read = Mux(RegNext(wrbypass.io.read_hit.get), RegNext(wrbypass_read_data), bt.io.r.resp.data)
+  val s1_idx = RegEnable(s0_idx, io.s0_fire)
+
+  val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
+  io.s1_cnt := per_br_ctr
 
 
   val oldCtrs =

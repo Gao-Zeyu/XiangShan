@@ -32,20 +32,28 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   def hasTag = tagWidth > 0
   def multipleWays = numWays > 1
   val io = IO(new Bundle {
+    // write wrbypass
     val wen = Input(Bool())
     val write_idx = Input(UInt(idxWidth.W))
     val write_tag = if (hasTag) Some(Input(UInt(tagWidth.W))) else None
     val write_data = Input(Vec(numWays, gen))
     val write_way_mask = if (multipleWays) Some(Input(Vec(numWays, Bool()))) else None
-    val ren = if (hasWr2sram) Some(Input(Bool())) else None
-    val pending_false = if (hasWr2sram) Some(Input(Bool())) else None
 
     val hit = Output(Bool())
     val hit_data = Vec(numWays, Valid(gen))
-    
+
+    // read wrbypass
+    val ren = if (hasWr2sram) Some(Input(Bool())) else None
+    val read_idx = if (hasWr2sram) Some(Input(UInt(idxWidth.W))) else None
+    val read_tag = if (hasTag && hasWr2sram) Some(Input(UInt(tagWidth.W))) else None
+    val read_hit = Output(Bool())
+    val read_data = Output(Vec(numWays, Valid(gen)))
+
+    // wrbypass write sram
     val by2sram = Output(Bool())
     val pending_sram_idx_tag = Output(new Idx_Tag)
     val pending_sram_data = Output(Vec(numWays, gen))
+    val pending_false = if (hasWr2sram) Some(Input(Bool())) else None
   })
 
   class WrBypassPtr extends CircularQueuePtr[WrBypassPtr](numEntries){
@@ -59,7 +67,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
       this.tag.map(_ := tag)
     }
   }
-  val idx_tag_cam = Module(new CAMTemplate(new Idx_Tag, numEntries, 1))
+  val idx_tag_cam = Module(new CAMTemplate(new Idx_Tag, numEntries, 2))
   val data_mem = Mem(numEntries, Vec(numWays, gen))
   val idx_tag_mem = Mem(numEntries, new Idx_Tag)
   val pending_write_to_sram = RegInit(VecInit(Seq.fill(numEntries)(0.B)))
@@ -74,8 +82,9 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
       when(!pending_write_to_sram(i)) { enq_idx := i.U }
     }
   } else { enq_idx := enq_ptr.value }
-  
 
+
+  //write hit
   idx_tag_cam.io.r.req(0)(io.write_idx, io.write_tag.getOrElse(0.U))
   val hits_oh = idx_tag_cam.io.r.resp(0)
   val hit_idx = OHToUInt(hits_oh)
@@ -86,6 +95,20 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
     io.hit_data(i).valid := Mux1H(hits_oh, valids)(i)
     io.hit_data(i).bits  := data_mem.read(hit_idx)(i)
   }
+
+  // read hit
+  idx_tag_cam.io.r.req(1)(io.read_idx.get, io.read_tag.getOrElse(0.U))
+  val hits_oh_r = idx_tag_cam.io.r.resp(1)
+  val hit_idx_r = OHToUInt(hits_oh_r)
+  val hit_r = hits_oh_r.reduce(_||_)
+
+  io.read_hit := hit_r
+  for (i <- 0 until numWays) {
+    io.read_data(i).valid := Mux1H(hits_oh_r, valids)(i)
+    io.read_data(i).bits  := data_mem.read(hit_idx_r)(i)
+  }
+
+  
 
   io.by2sram := pending_write_to_sram.reduce(_||_)
   val pending_bypass_idx = WireDefault(0.U(log2Up(numEntries).W))
