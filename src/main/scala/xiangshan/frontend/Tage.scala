@@ -342,6 +342,13 @@ class TageTable
 
   us.io.r.req.valid := io.req.fire
   us.io.r.req.bits.setIdx := s0_idx
+  XSPerfAccumulate("us_rw_sametime", us.io.r.req.valid && us.io.w.req.valid)
+  for (b <- 0 until nBanks) {
+      //assert(!(table_banks(b).io.r.req.valid && table_banks(b).io.w.req.valid))
+      //assert(table_banks(b).io.r.req.ready)
+      XSPerfAccumulate(f"table_banks_rw_sametime${b}", table_banks(b).io.r.req.valid && table_banks(b).io.w.req.valid)
+      XSPerfAccumulate(f"table_banks_rready${b}", !table_banks(b).io.r.req.ready)
+  }
 
 
   val s1_unhashed_idx = RegEnable(req_unhashed_idx, io.req.fire)
@@ -351,18 +358,34 @@ class TageTable
   val s1_bank_req_1h = RegEnable(s0_bank_req_1h, io.req.fire)
   val s1_bank_has_write_last_cycle = RegNext(VecInit(table_banks.map(_.io.w.req.valid)))
 
-  
+  val bank_wrbypasses = Seq.fill(nBanks)(Seq.fill(numBr)(
+    Module(new WrBypass(UInt(TageCtrBits.W), perBankWrbypassEntries, log2Ceil(nRowsPerBr/nBanks), tagWidth=tagLen, hasWr2sram = true))
+  )) // let it corresponds to logical brIdx
+
   val tables_r = table_banks.map(_.io.r.resp.data) // s1
+  val bypass_r = bank_wrbypasses.map(i => VecInit(i.map(j => RegNext(j.io.read_data)))) //s1
+  val bypass_hit = bank_wrbypasses.map(i => VecInit(i.map(j => RegNext(j.io.read_hit))))
   
   val resp_selected = Mux1H(s1_bank_req_1h, tables_r)
-  val resp_invalid_by_write = Mux1H(s1_bank_req_1h, s1_bank_has_write_last_cycle)
+  val byps_selected_1 = Mux1H(s1_bank_req_1h, bypass_r)
+  val bypass_hit_selected = Mux1H(s1_bank_req_1h, bypass_hit)
+  val byps_selected_2 = Wire(Vec(numBr, new TageEntry))
+  byps_selected_2 zip byps_selected_1 foreach { case (data, pass) => {
+    data.ctr := pass(0).bits
+    data.tag := s1_tag
+    data.valid := true.B
+  }}
+  val final_selected = VecInit((0 until numBr).map(pi => {
+      Mux(bypass_hit_selected(pi) && byps_selected_1(pi)(0).valid, byps_selected_2(pi), resp_selected(pi))
+    }))
+  //val resp_invalid_by_write = Mux1H(s1_bank_req_1h, s1_bank_has_write_last_cycle)
 
 
-  val per_br_resp = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), resp_selected)))
+  val per_br_resp = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), final_selected)))
   val per_br_u    = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), us.io.r.resp.data)))
   
   val req_rhits = VecInit((0 until numBr).map(i =>
-    per_br_resp(i).valid && per_br_resp(i).tag === s1_tag && !resp_invalid_by_write
+    per_br_resp(i).valid && per_br_resp(i).tag === s1_tag // && !resp_invalid_by_write
   ))
 
   for (i <- 0 until numBr) {
@@ -402,9 +425,6 @@ class TageTable
   val (ram_ren, ram_wen) = (VecInit(Seq.tabulate(nBanks)(b => io.req.fire && s0_bank_req_1h(b))), 
                             VecInit(Seq.tabulate(nBanks)(b => io.update.mask.reduce(_||_) && update_req_bank_1h(b) && per_bank_not_silent_update(b).reduce(_||_))))
 
-  val bank_wrbypasses = Seq.fill(nBanks)(Seq.fill(numBr)(
-    Module(new WrBypass(UInt(TageCtrBits.W), perBankWrbypassEntries, log2Ceil(nRowsPerBr/nBanks), tagWidth=tagLen, hasWr2sram = true))
-  )) // let it corresponds to logical brIdx
 
   for (b <- 0 until nBanks) {
     val wrbypass = bank_wrbypasses(b)
@@ -497,7 +517,7 @@ class TageTable
       // read wrbypass
       wrbypass.io.ren.get := wrbypass_ren(b)(li)
       wrbypass.io.read_idx.get := get_bank_idx(s0_idx)
-      wrbypass.io.read_tag.get := 0.U //TODO:
+      wrbypass.io.read_tag.get := s0_tag
       // write wrbypass
       wrbypass.io.wen := io.update.mask(li) && update_req_bank_1h(b)
       wrbypass.io.write_idx := get_bank_idx(update_idx)
