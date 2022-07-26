@@ -30,6 +30,7 @@ import freechips.rocketchip.transforms.naming.RenameDesiredNames
 import scala.math.min
 import scala.util.matching.Regex
 import os.followLink
+import huancun.utils.ChiselDB
 
 trait TageParams extends HasBPUConst with HasXSParameter {
   // println(BankTageTableInfos)
@@ -193,6 +194,22 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   }
   val s1_read = wrbypass2sram_map_valid(RegNext(s0_idx), RegNext(wrbypass.io.read_hit), RegNext(wrbypass.io.read_data), bt.io.r.resp.data, false)
   val s1_idx = RegEnable(s0_idx, io.s0_fire)
+
+  // ChiselDB
+  class TageBTable_DB extends Bundle {
+    //val ren = Bool()
+    val rw_sametime = Bool()
+    val ridx = UInt(log2Up(BtSize).W)
+    val rdata = Vec(numBr, UInt(2.W))
+  }
+  val table_TageB_data = Wire(new TageBTable_DB)
+  val table_TageB_log = ChiselDB.createTable("table_TageB_log", new TageBTable_DB)
+  //table_TageB_data.ren := RegNext(ren)
+  table_TageB_data.rw_sametime := RegNext(ren && wen)
+  table_TageB_data.ridx := s1_idx
+  table_TageB_data.rdata := s1_read
+  // def log(data: DecoupledIO[T], site: String, clock: Clock, reset: Reset): Unit
+  table_TageB_log.log(table_TageB_data, RegNext(ren), "Table_TageB" , this.clock, this.reset)
 
   val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
   io.s1_cnt := per_br_ctr
