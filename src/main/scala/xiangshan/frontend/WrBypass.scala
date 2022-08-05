@@ -75,13 +75,7 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   val valids = RegInit(0.U.asTypeOf(Vec(numEntries, Vec(numWays, Bool()))))
 
   val enq_ptr = RegInit(0.U.asTypeOf(new WrBypassPtr))
-
-  val enq_idx = WireDefault(0.U(log2Up(numEntries).W))
-  if (hasWr2sram){
-    for (i <- 0 until numEntries) {
-      when(!pending_write_to_sram(i)) { enq_idx := i.U }
-    }
-  } else { enq_idx := enq_ptr.value }
+  val enq_idx = enq_ptr.value
 
 
   //write hit
@@ -163,7 +157,9 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   idx_tag_cam.io.w.valid := enq_en
   idx_tag_cam.io.w.bits.index := enq_idx
   idx_tag_cam.io.w.bits.data(io.write_idx, io.write_tag.getOrElse(0.U))
-  enq_ptr := enq_ptr + enq_en
+  if (hasWr2sram) {
+    enq_ptr := Mux(enq_en, MuxCase(enq_ptr + 1.U, (1 until numEntries).map(i => (!pending_write_to_sram((enq_ptr + i.U).value), enq_ptr + i.U))), enq_ptr)
+  } else { enq_ptr := enq_ptr + enq_en }
 
   XSPerfAccumulate("wrbypass_hit",  io.wen &&  hit)
   XSPerfAccumulate("wrbypass_miss", io.wen && !hit)
