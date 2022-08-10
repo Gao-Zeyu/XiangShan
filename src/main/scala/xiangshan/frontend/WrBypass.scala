@@ -130,12 +130,8 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
       when(!hit) { pending_write_to_sram(data_write_idx) := false.B }
     }
     .otherwise { pending_write_to_sram(data_write_idx) := true.B }
-    pending_write_to_sram(data_write_idx) := io.ren.getOrElse(false.B)
   }
 
-  XSPerfAccumulate("hit_over_pending", io.wen && hit && pending_write_to_sram(hit_idx))
-  XSPerfAccumulate("enq_over_pending", io.wen && !hit && pending_write_to_sram(enq_idx))
-  XSPerfAccumulate("read_write_sameTime", io.wen && io.ren.getOrElse(0.B))
 
   // update valids
   for (i <- 0 until numWays) {
@@ -161,8 +157,14 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
     enq_ptr := Mux(enq_en, MuxCase(enq_ptr + 1.U, (1 until numEntries).map(i => (!pending_write_to_sram((enq_ptr + i.U).value), enq_ptr + i.U))), enq_ptr)
   } else { enq_ptr := enq_ptr + enq_en }
 
+  XSPerfAccumulate("wrbypass_wen",  io.wen)
   XSPerfAccumulate("wrbypass_hit",  io.wen &&  hit)
   XSPerfAccumulate("wrbypass_miss", io.wen && !hit)
+
+  XSPerfAccumulate("hit_over_pending", io.wen && hit && pending_write_to_sram(hit_idx))
+  XSPerfAccumulate("hit_over_pending", io.wen && hit && pending_write_to_sram(hit_idx))
+  XSPerfAccumulate("enq_over_pending", io.wen && !hit && pending_write_to_sram(enq_idx))
+  XSPerfAccumulate("read_write_sameTime", io.wen && io.ren.getOrElse(0.B))
 
   XSDebug(io.wen && hit,  p"wrbypass hit entry #${hit_idx}, idx ${io.write_idx}" +
     p"tag ${io.write_tag.getOrElse(0.U)}data ${io.write_data}\n")
