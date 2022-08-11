@@ -135,7 +135,7 @@ class TageMeta(implicit p: Parameters)
 
 trait TBTParams extends HasXSParameter with TageParams {
   val BtSize = 2048
-  val bypassEntries = 8
+  val bypassEntries = 64
 }
 
 @chiselName
