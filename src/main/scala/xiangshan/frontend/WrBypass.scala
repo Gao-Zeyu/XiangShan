@@ -166,6 +166,14 @@ class WrBypass[T <: Data](gen: T, val numEntries: Int, val idxWidth: Int,
   XSPerfAccumulate("enq_over_pending", io.wen && !hit && pending_write_to_sram(enq_idx))
   XSPerfAccumulate("read_write_sameTime", io.wen && io.ren.getOrElse(0.B))
 
+  // addReadMuxCounter
+  if (hasWr2sram){
+    XSPerfAccumulate("read_in_wrbypass", io.ren.getOrElse(0.B))
+    XSPerfAccumulate("write_in_wrbypass", io.wen)
+    XSPerfAccumulate("read_hit_in_wrbypass", io.read_hit && io.ren.getOrElse(0.B))
+    XSPerfAccumulate("read_hit_in_wrbypass_pending", io.read_hit && io.ren.getOrElse(0.B) && pending_write_to_sram(hit_idx_r))
+  }
+
   XSDebug(io.wen && hit,  p"wrbypass hit entry #${hit_idx}, idx ${io.write_idx}" +
     p"tag ${io.write_tag.getOrElse(0.U)}data ${io.write_data}\n")
   XSDebug(io.wen && !hit, p"wrbypass enq entry #${enq_idx}, idx ${io.write_idx}" +
