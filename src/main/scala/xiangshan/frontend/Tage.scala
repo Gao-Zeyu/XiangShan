@@ -151,8 +151,6 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
    // val update  = Input(new TageUpdate)
   })
 
-  val (ren, wen) = (io.s0_fire, io.update_mask.reduce(_||_))
-
   val bimAddr = new TableAddr(log2Up(BtSize), instOffsetBits)
 
   val bt = Module(new SRAMTemplate(UInt(2.W), set = BtSize, way=numBr, shouldReset = false, holdRead = true))
@@ -166,14 +164,20 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
   bt.io.r.req.valid := io.s0_fire
   bt.io.r.req.bits.setIdx := s0_idx
 
+  val s1_read = bt.io.r.resp.data
+  val s1_idx = RegEnable(s0_idx, io.s0_fire)
+
+
+  val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
+  io.s1_cnt := per_br_ctr
+
   // Update logic
 
   val u_idx = bimAddr.getIdx(io.update_pc)
 
   val newCtrs = Wire(Vec(numBr, UInt(2.W))) // physical bridx
 
-  val wrbypass = Module(new WrBypass(UInt(2.W), bypassEntries, log2Up(BtSize), numWays = numBr, hasWr2sram = true)) // logical bridx
-  // write
+  val wrbypass = Module(new WrBypass(UInt(2.W), bypassEntries, log2Up(BtSize), numWays = numBr)) // logical bridx
   wrbypass.io.wen := io.update_mask.reduce(_||_)
   wrbypass.io.write_idx := u_idx
   wrbypass.io.write_way_mask.map(_ := io.update_mask)
@@ -181,41 +185,15 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
     val br_pidx = get_phy_br_idx(u_idx, li)
     wrbypass.io.write_data(li) := newCtrs(br_pidx)
   }
-  // read
-  wrbypass.io.ren.get := ren
-  wrbypass.io.read_idx.get := s0_idx
 
-  // read from wrbypass/sram
-  def wrbypass2sram_map_valid(idx: UInt, hit: Bool, data1: Vec[Valid[UInt]], data2: Vec[UInt], type2: Boolean): Vec[UInt] = { //type2: true->wrbypass
+
+  val oldCtrs =
     VecInit((0 until numBr).map(pi => {
-      val br_lidx = get_lgc_br_idx(idx, pi.U(log2Ceil(numBr).W))
-      Mux(hit && data1(br_lidx).valid, data1(br_lidx).bits, data2(if(type2){br_lidx}else{pi.U}))
+      val br_lidx = get_lgc_br_idx(u_idx, pi.U(log2Ceil(numBr).W))
+      Mux(wrbypass.io.hit && wrbypass.io.hit_data(br_lidx).valid,
+        wrbypass.io.hit_data(br_lidx).bits,
+        io.update_cnt(br_lidx))
     }))
-  }
-  val s1_read = wrbypass2sram_map_valid(RegNext(s0_idx), RegNext(wrbypass.io.read_hit), RegNext(wrbypass.io.read_data), bt.io.r.resp.data, false)
-  val s1_idx = RegEnable(s0_idx, io.s0_fire)
-
-  // ChiselDB
-  class TageBTable_DB extends Bundle {
-    //val ren = Bool()
-    val rw_sametime = Bool()
-    val ridx = UInt(log2Up(BtSize).W)
-    val rdata = Vec(numBr, UInt(2.W))
-  }
-  val table_TageB_data = Wire(new TageBTable_DB)
-  val table_TageB_log = ChiselDB.createTable("table_TageB_log", new TageBTable_DB)
-  //table_TageB_data.ren := RegNext(ren)
-  table_TageB_data.rw_sametime := RegNext(ren && wen)
-  table_TageB_data.ridx := s1_idx
-  table_TageB_data.rdata := s1_read
-  // def log(data: DecoupledIO[T], site: String, clock: Clock, reset: Reset): Unit
-  table_TageB_log.log(table_TageB_data, RegNext(ren), "Table_TageB" , this.clock, this.reset)
-
-  val per_br_ctr = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_idx, i), numBr), s1_read)))
-  io.s1_cnt := per_br_ctr
-
-
-  val oldCtrs = wrbypass2sram_map_valid(u_idx, wrbypass.io.hit, wrbypass.io.hit_data, io.update_cnt, true)
 
   def satUpdate(old: UInt, len: Int, taken: Bool): UInt = {
     val oldSatTaken = old === ((1 << len)-1).U
@@ -237,28 +215,12 @@ class TageBTable(implicit p: Parameters) extends XSModule with TBTParams{
     ).reduce(_||_)
   )).asUInt
 
-  def wrbypass2sram_map_N(idx: UInt, data: Vec[UInt]): Vec[UInt] = { //type2: true->wrbypass
-    VecInit((0 until numBr).map(pi => {
-      val br_lidx = get_lgc_br_idx(idx, pi.U(log2Ceil(numBr).W))
-      data(br_lidx)
-    }))
-  }
-  val (wr2sram_en, by2sram_en) = ((wen && !ren), (!wen && !ren && wrbypass.io.by2sram))
-  val by2sram_idx = wrbypass.io.pending_sram_idx_tag.idx
-  val by2sram_data = wrbypass2sram_map_N(by2sram_idx, wrbypass.io.pending_sram_data)
-  wrbypass.io.pending_false.get := by2sram_en
-
   bt.io.w.apply(
-    valid = wr2sram_en || by2sram_en || doing_reset,
-    data    = Mux(doing_reset, VecInit(Seq.fill(numBr)(2.U(2.W))), Mux(wr2sram_en, newCtrs, by2sram_data)),
-    setIdx  = Mux(doing_reset, resetRow,                           Mux(wr2sram_en, u_idx, by2sram_idx)),
-    waymask = Mux(doing_reset, Fill(numBr, 1.U(1.W)).asUInt(),     Mux(wr2sram_en, updateWayMask, Fill(numBr, 1.U(1.W)).asUInt()))
+    valid = io.update_mask.reduce(_||_) || doing_reset,
+    data = Mux(doing_reset, VecInit(Seq.fill(numBr)(2.U(2.W))), newCtrs),
+    setIdx = Mux(doing_reset, resetRow, u_idx),
+    waymask = Mux(doing_reset, Fill(numBr, 1.U(1.W)).asUInt(), updateWayMask)
   )
-
-  when(!doing_reset){
-    assert(!(bt.io.r.req.valid && bt.io.w.req.valid))
-    assert(bt.io.r.req.ready)
-  }
 
 }
 
@@ -268,7 +230,7 @@ class TageTable
 (
   val nRows: Int, val histLen: Int, val tagLen: Int, val tableIdx: Int
 )(implicit p: Parameters)
-  extends TageModule with HasFoldedHistory {
+  extends TageModule with HasFoldedHistory with TBTParams {
   val io = IO(new Bundle() {
     val req = Flipped(DecoupledIO(new TageReq))
     val resps = Output(Vec(numBr, Valid(new TageResp)))
@@ -357,6 +319,12 @@ class TageTable
     table_banks(b).io.r.req.bits.setIdx := get_bank_idx(s0_idx)
   }
 
+  // us
+  val (us_ren, us_wen) = (io.req.fire, io.update.uMask.reduce(_||_))
+  val us_wrbypass = withReset(reset.asBool || io.update.reset_u.reduce(_||_)){
+    Module(new WrBypass(Bool(), bypassEntries, log2Up(nRowsPerBr), numWays = numBr, hasWr2sram = true))
+  }
+  // us_read
   us.io.r.req.valid := io.req.fire
   us.io.r.req.bits.setIdx := s0_idx
   XSPerfAccumulate("us_rw_sametime", us.io.r.req.valid && us.io.w.req.valid)
@@ -366,6 +334,9 @@ class TageTable
       XSPerfAccumulate(f"table_banks_rw_sametime${b}", table_banks(b).io.r.req.valid && table_banks(b).io.w.req.valid)
       XSPerfAccumulate(f"table_banks_rready${b}", !table_banks(b).io.r.req.ready)
   }
+  // us_wrbypass_read
+  us_wrbypass.io.ren.get := us_ren
+  us_wrbypass.io.read_idx.get := s0_idx
 
 
   val s1_unhashed_idx = RegEnable(req_unhashed_idx, io.req.fire)
@@ -399,7 +370,17 @@ class TageTable
 
 
   val per_br_resp = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), final_selected)))
-  val per_br_u    = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), us.io.r.resp.data)))
+
+  // us_read / us_wrbypass_read
+  def read_map_us(hit: Bool, data1: Vec[Valid[Bool]], data2: Vec[Bool]): Vec[Bool] = {
+    VecInit((0 until numBr).map(pi => {
+      Mux(hit && data1(pi).valid, data1(pi).bits, data2(pi))
+    }))
+  }
+  val tables_r_u = us.io.r.resp.data
+  val bypass_r_u = RegNext(us_wrbypass.io.read_data)
+  val bypass_hit_u = RegNext(us_wrbypass.io.read_hit)
+  val per_br_u    = VecInit((0 until numBr).map(i => Mux1H(UIntToOH(get_phy_br_idx(s1_unhashed_idx, i), numBr), read_map_us(bypass_hit_u, bypass_r_u, tables_r_u))))
   
   val req_rhits = VecInit((0 until numBr).map(i =>
     per_br_resp(i).valid && per_br_resp(i).tag === s1_tag // && !resp_invalid_by_write
@@ -483,7 +464,7 @@ class TageTable
       get_phy_br_idx(update_unhashed_idx, li) === pi.U &&
       io.update.uMask(li)
     ).reduce(_||_)
-  })).asUInt
+  }))
 
   val update_u_wdata = VecInit((0 until numBr).map(pi =>
     Mux1H(Seq.tabulate(numBr)(li =>
@@ -491,7 +472,24 @@ class TageTable
     ))
   ))
 
-  us.io.w.apply(io.update.uMask.reduce(_||_), update_u_wdata, update_u_idx, update_u_way_mask)
+  // us_wrbypass_write
+  us_wrbypass.io.wen := us_wen
+  us_wrbypass.io.write_idx := update_u_idx
+  us_wrbypass.io.write_way_mask.map(_ := update_u_way_mask)
+  us_wrbypass.io.write_data := update_u_wdata
+  
+  // us_write
+  val (us_wr2sram_en, us_by2sram_en) = ((us_wen && !us_ren), (!us_wen && !us_ren && us_wrbypass.io.by2sram))
+  val us_by2sram_idx = us_wrbypass.io.pending_sram_idx_tag.idx
+  val us_by2sram_data = us_wrbypass.io.pending_sram_data
+  us_wrbypass.io.pending_false.get := us_by2sram_en
+
+  us.io.w.apply(
+    valid   = us_wr2sram_en || us_by2sram_en,
+    data    = Mux(us_wr2sram_en, update_u_wdata, us_by2sram_data),
+    setIdx  = Mux(us_wr2sram_en, update_u_idx, us_by2sram_idx),
+    waymask = Mux(us_wr2sram_en, update_u_way_mask.asUInt, Fill(numBr, 1.U(1.W)).asUInt())
+  )
   
   // remove silent updates
   def silentUpdate(ctr: UInt, taken: Bool) = {
