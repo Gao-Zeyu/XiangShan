@@ -137,12 +137,9 @@ class IttageTable(
 
   private val tableReadData = table.io.r.resp.data(0)
 
-  private val s1_reqReadHit = tableReadData.valid && tableReadData.tag === s1_tag
+  private val s1_reqReadHit = tableReadData.valid && (if (tagLen != 0) tableReadData.tag === s1_tag else true.B)
 
-  private val readWriteConflict    = io.update.valid && io.req.valid
-  private val s1_readWriteConflict = RegEnable(readWriteConflict, io.req.valid)
-
-  io.resp.valid    := (if (tagLen != 0) s1_reqReadHit && !s1_readWriteConflict else true.B) && s1_valid // && s1_mask(b)
+  io.resp.valid    := s1_reqReadHit && s1_valid // && s1_mask(b)
   io.resp.bits.cnt := tableReadData.confidenceCnt
   io.resp.bits.usefulCnt    := tableReadData.usefulCnt
   io.resp.bits.targetOffset := tableReadData.targetOffset
@@ -201,6 +198,10 @@ class IttageTable(
 
   // write from writeBuffer to sram
   table.io.w.apply(writeValid, writeEntry, writeSetIdx, writeWayMask, writeBitmask)
+
+  // read-write conflict: can provide data to sram write port, but sram read port is also requesting
+  private val readWriteConflict = table.io.r.req.valid && writeBufferRPort.valid
+
 
   // Power-on reset
   private val powerOnResetState = RegInit(true.B)
