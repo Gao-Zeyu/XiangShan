@@ -69,6 +69,14 @@ on:
         description: JSON file path for SPEC06 checkpoints. Ignore this unless benchmark_type is set to custom
         required: false
         type: string
+      run_topdown:
+        description: Run TopDown post-analysis after SPEC finishes
+        required: false
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
 
 jobs:
   performance-test:
@@ -83,4 +91,5 @@ jobs:
         servers: ${{ github.event.inputs.servers }}
         checkpoint_path: ${{ github.event.inputs.checkpoint_path }}
         json_path: ${{ github.event.inputs.json_path }}
+        run_topdown: ${{ github.event.inputs.run_topdown }}
         perf_report_dir: /nfs/home/cirunner/perf-report-custom

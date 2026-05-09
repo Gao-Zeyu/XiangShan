@@ -42,6 +42,11 @@ on:
         description: JSON file path for SPEC06 checkpoints. Ignore this unless benchmark_type is set to custom
         required: false
         type: string
+      run_topdown:
+        description: Run TopDown post-analysis after SPEC finishes
+        required: false
+        type: string
+        default: "false"
       perf_report_dir:
         description: Directory for all spec reports
         required: true
@@ -238,6 +243,18 @@ jobs:
             --xs $GITHUB_WORKSPACE --threads 16 --dir $SPEC_DIR --report \
             > $SPEC_DIR/score.txt
 
+      - name: Run TopDown analysis
+        if: ${{ !cancelled() && inputs.run_topdown == 'true' }}
+        continue-on-error: true
+        run: |
+          TOPDOWN_OUT="$SPEC_DIR/perf-analysis/topdown"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/perf_topdown_ci.py" \
+            --stat-dir "$SPEC_DIR" \
+            --cluster-json "$CKPT_JSON_PATH" \
+            --xiangshan-root "$GITHUB_WORKSPACE" \
+            --benchmark-type "${{ inputs.benchmark_type }}" \
+            --output "$TOPDOWN_OUT"
+
       - name: Summary result
         if: always()
         run: |
@@ -256,3 +273,15 @@ jobs:
           echo "- int: **${INT_SCORE}**" >> $GITHUB_STEP_SUMMARY
           echo "- fp: **${FP_SCORE}**" >> $GITHUB_STEP_SUMMARY
           echo "- total: **${TOTAL_SCORE}**" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f "$SPEC_DIR/perf-analysis/topdown/topdown_status.txt" ] || [ -f "$SPEC_DIR/perf-analysis/topdown/topdown.md" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### TopDown Analysis" >> $GITHUB_STEP_SUMMARY
+            if [ -f "$SPEC_DIR/perf-analysis/topdown/topdown_status.txt" ]; then
+              cat "$SPEC_DIR/perf-analysis/topdown/topdown_status.txt" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ -f "$SPEC_DIR/perf-analysis/topdown/topdown.md" ]; then
+              cat "$SPEC_DIR/perf-analysis/topdown/topdown.md" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
